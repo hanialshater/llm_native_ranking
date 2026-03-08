@@ -63,7 +63,7 @@ def scrape_all(n_pages=5, n_reviews=None, delay=2.0):
                     "title": review["title"],
                     "url": review["url"],
                     "text": text,
-                    "external_id": review.get("stars", ""),
+                    "external_id": review["url"].rstrip("/").split("/")[-1],
                 })
         except Exception as e:
             print(f"    Failed: {e}")

@@ -112,7 +112,7 @@ def check_convergence(scores_prev, scores_curr):
         for r, eid in enumerate(sorted(ids, key=lambda i: -scores_curr[i]))
     }
     n = len(ids)
-    if n <= 1:
+    if n < 2:
         return 1.0
     d2 = sum((prev_ranks[i] - curr_ranks[i]) ** 2 for i in ids)
     rho = 1 - (6 * d2) / (n * (n**2 - 1))

@@ -1,7 +1,11 @@
 """SQLite setup and helper functions for the ranking pipeline."""
 
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
+
+
+def _now():
+    return datetime.now(timezone.utc).isoformat()
 
 
 SCHEMA = """
@@ -14,6 +18,9 @@ CREATE TABLE IF NOT EXISTS episodes (
     raw_text TEXT,
     scraped_at TIMESTAMP
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_episodes_source_extid
+    ON episodes(source, external_id) WHERE external_id != '';
 
 CREATE TABLE IF NOT EXISTS essays (
     id INTEGER PRIMARY KEY,
@@ -83,7 +90,7 @@ def insert_episode(conn, source, data):
             data.get("title", ""),
             data.get("url", ""),
             data.get("text", ""),
-            datetime.utcnow().isoformat(),
+            _now(),
         ),
     )
     conn.commit()
@@ -91,7 +98,7 @@ def insert_episode(conn, source, data):
 
 
 def insert_essay(conn, episode_id, essay_data):
-    """Insert an essay and return its id."""
+    """Insert an essay (caller should commit in batch)."""
     cur = conn.execute(
         """INSERT INTO essays (episode_id, position, text, title, created_at)
            VALUES (?, ?, ?, ?, ?)""",
@@ -100,41 +107,37 @@ def insert_essay(conn, episode_id, essay_data):
             essay_data.get("position", 0),
             essay_data["text"],
             essay_data.get("title", ""),
-            datetime.utcnow().isoformat(),
+            _now(),
         ),
     )
-    conn.commit()
     return cur.lastrowid
 
 
 def insert_ranking(conn, essay_id, session_id, dimension, rank, method, model):
-    """Insert a ranking record."""
+    """Insert a ranking record (caller should commit in batch)."""
     conn.execute(
         """INSERT INTO rankings (essay_id, session_id, dimension, rank, method, model, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (essay_id, session_id, dimension, rank, method, model, datetime.utcnow().isoformat()),
+        (essay_id, session_id, dimension, rank, method, model, _now()),
     )
-    conn.commit()
 
 
 def insert_rrf_score(conn, essay_id, session_id, use_case, score, rank_within_episode):
-    """Insert an RRF score record."""
+    """Insert an RRF score record (caller should commit in batch)."""
     conn.execute(
         """INSERT INTO rrf_scores (essay_id, session_id, use_case, score, rank_within_episode, created_at)
            VALUES (?, ?, ?, ?, ?, ?)""",
-        (essay_id, session_id, use_case, score, rank_within_episode, datetime.utcnow().isoformat()),
+        (essay_id, session_id, use_case, score, rank_within_episode, _now()),
     )
-    conn.commit()
 
 
 def insert_bt_score(conn, essay_id, dimension, bt_score, pass_number, session_id):
-    """Insert a BT score record."""
+    """Insert a BT score record (caller should commit in batch)."""
     conn.execute(
         """INSERT INTO bt_scores (essay_id, dimension, bt_score, pass_number, session_id, created_at)
            VALUES (?, ?, ?, ?, ?, ?)""",
-        (essay_id, dimension, bt_score, pass_number, session_id, datetime.utcnow().isoformat()),
+        (essay_id, dimension, bt_score, pass_number, session_id, _now()),
     )
-    conn.commit()
 
 
 def get_essays_for_episode(conn, episode_id):
@@ -196,7 +199,16 @@ def get_rankings_for_episode(conn, episode_id, session_id=None):
 
 
 def delete_essays_for_episode(conn, episode_id):
-    """Delete all essays for an episode (for force-rewrite)."""
+    """Delete all essays and their dependent rankings/scores for an episode."""
+    essay_ids = conn.execute(
+        "SELECT id FROM essays WHERE episode_id = ?", (episode_id,)
+    ).fetchall()
+    if essay_ids:
+        ids = [r["id"] for r in essay_ids]
+        placeholders = ",".join("?" * len(ids))
+        conn.execute(f"DELETE FROM rankings WHERE essay_id IN ({placeholders})", ids)
+        conn.execute(f"DELETE FROM rrf_scores WHERE essay_id IN ({placeholders})", ids)
+        conn.execute(f"DELETE FROM bt_scores WHERE essay_id IN ({placeholders})", ids)
     conn.execute("DELETE FROM essays WHERE episode_id = ?", (episode_id,))
     conn.commit()
 

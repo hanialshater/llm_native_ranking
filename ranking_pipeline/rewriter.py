@@ -44,9 +44,19 @@ def rewrite_episode(raw_text, model=None):
     text = text.strip()
     if text.startswith("```"):
         lines = text.split("\n")
-        text = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
+        end = -1 if lines[-1].strip().startswith("```") else len(lines)
+        text = "\n".join(lines[1:end]).strip()
 
-    return json.loads(text)
+    essays = json.loads(text)
+
+    # Validate structure: each item must have a 'text' field
+    validated = []
+    for e in essays:
+        if isinstance(e, dict) and "text" in e:
+            validated.append(e)
+    if not validated:
+        raise ValueError(f"LLM returned no valid essays (got {len(essays)} items)")
+    return validated
 
 
 def rewrite_batch(episodes_texts, model=None):

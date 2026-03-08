@@ -1,7 +1,6 @@
 """Full pipeline runner: scrape → rewrite → rank → score → fuse."""
 
 import uuid
-import sys
 
 from .db import (
     get_connection,
@@ -46,7 +45,8 @@ def run_scrape(source="philosophize_this", n_episodes=10, db_path="ranking.db",
     inserted = 0
     skipped = 0
     for ep_data in raw:
-        ext_id = ep_data.get("external_id", "")
+        ext_id = ep_data.get("external_id", "") or ep_data.get("url", "")
+        ep_data["external_id"] = ext_id
         if not force and ext_id and episode_exists(conn, source, ext_id):
             skipped += 1
             continue
@@ -94,6 +94,7 @@ def run_rewrite(source="philosophize_this", model=None, db_path="ranking.db",
             essays = rewrite_episode(ep["raw_text"], model=model)
             for e in essays:
                 insert_essay(conn, ep["id"], e)
+            conn.commit()
             print(f"    → {len(essays)} essays")
             total += len(essays)
         except Exception as e:
@@ -125,6 +126,7 @@ def run_rank(source="philosophize_this", model=None, db_path="ranking.db",
         prefix = f"[{idx}/{total_episodes}]"
         ep_essays = get_essays_for_episode(conn, ep["id"])
         if len(ep_essays) < 3:
+            print(f"  {prefix} Episode {ep['id']} has only {len(ep_essays)} essays (<3), skipping ranking")
             continue
 
         # Skip if already ranked (check for any existing rankings)
@@ -155,6 +157,7 @@ def run_rank(source="philosophize_this", model=None, db_path="ranking.db",
                 for rank_pos, essay_id in enumerate(sorted_ids):
                     insert_rrf_score(conn, essay_id, session_id, use_case, scores[essay_id], rank_pos + 1)
 
+            conn.commit()
             ranked_count += 1
         except Exception as e:
             print(f"    Failed ranking episode {ep['id']}: {e}")
@@ -173,6 +176,7 @@ def run_rank(source="philosophize_this", model=None, db_path="ranking.db",
         for dim, bt_scores in bt_results.items():
             for essay_id, score in bt_scores.items():
                 insert_bt_score(conn, essay_id, dim, score, bt_max_passes, session_id)
+        conn.commit()
     else:
         print("\nSkipping global BT (not enough essays or disabled)")
 
@@ -183,7 +187,7 @@ def run_rank(source="philosophize_this", model=None, db_path="ranking.db",
 
 def run_pipeline(source="philosophize_this", n_episodes=10, model=None,
                  db_path="ranking.db", run_global_bt=True, bt_max_passes=3,
-                 force=False):
+                 bt_window_size=12, force=False):
     """Run the full pipeline end-to-end."""
     print(f"{'='*50}")
     print(f"STEP 1: SCRAPING")
@@ -199,6 +203,7 @@ def run_pipeline(source="philosophize_this", n_episodes=10, model=None,
     print(f"STEP 3: RANKING")
     print(f"{'='*50}")
     session_id = run_rank(source, model, db_path, run_global_bt,
+                          bt_window_size=bt_window_size,
                           bt_max_passes=bt_max_passes, force=force)
 
     return session_id

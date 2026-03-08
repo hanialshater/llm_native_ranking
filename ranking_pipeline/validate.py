@@ -13,9 +13,9 @@ def spearman(rank_a, rank_b):
     Returns:
         Float in [-1, 1].
     """
-    ids = list(rank_a.keys())
+    ids = list(set(rank_a.keys()) & set(rank_b.keys()))
     n = len(ids)
-    if n <= 1:
+    if n < 2:
         return 1.0
     d2 = sum((rank_a[i] - rank_b[i]) ** 2 for i in ids)
     return 1 - (6 * d2) / (n * (n**2 - 1))

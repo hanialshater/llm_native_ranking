@@ -13,10 +13,17 @@ REASONING_MODEL = "deepseek-reasoner"  # DeepSeek-R1
 # Retry settings
 MAX_RETRIES = 4
 INITIAL_BACKOFF = 2  # seconds
+REQUEST_TIMEOUT = 120  # seconds
+
+# Module-level client (reused across calls)
+_client = None
 
 
 def get_client():
-    """Get an OpenAI-compatible client configured for DeepSeek."""
+    """Get an OpenAI-compatible client configured for DeepSeek (cached)."""
+    global _client
+    if _client is not None:
+        return _client
     api_key = os.environ.get("DEEPSEEK_API_KEY", "")
     base_url = os.environ.get("DEEPSEEK_BASE_URL", DEFAULT_BASE_URL)
     if not api_key:
@@ -24,7 +31,8 @@ def get_client():
             "Set DEEPSEEK_API_KEY environment variable. "
             "Get one at https://platform.deepseek.com/"
         )
-    return OpenAI(api_key=api_key, base_url=base_url)
+    _client = OpenAI(api_key=api_key, base_url=base_url, timeout=REQUEST_TIMEOUT)
+    return _client
 
 
 def chat(prompt, model=None, max_tokens=4000, temperature=0.0):

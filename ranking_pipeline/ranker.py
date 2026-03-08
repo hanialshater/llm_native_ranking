@@ -38,6 +38,17 @@ RANK_PROMPT = """You will rank the following essays by one specific dimension.
 Return only the JSON array, nothing else."""
 
 
+def _strip_code_fences(text):
+    """Strip markdown code fences from LLM output."""
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        # Remove first line (```json or ```) and last line if it's ```)
+        end = -1 if lines[-1].strip().startswith("```") else len(lines)
+        text = "\n".join(lines[1:end])
+    return text.strip()
+
+
 def rank_essays(essays, dimension, model=None):
     """
     Rank essays on a single dimension via listwise LLM judgment.
@@ -50,6 +61,7 @@ def rank_essays(essays, dimension, model=None):
     Returns:
         List of essay IDs in ranked order (best first).
     """
+    valid_ids = {e["id"] for e in essays}
     formatted = "\n\n".join(
         [f"**Essay {e['id']}:**\n{e['text']}" for e in essays]
     )
@@ -57,13 +69,22 @@ def rank_essays(essays, dimension, model=None):
 
     prompt = RANK_PROMPT.format(dimension_description=dim_desc, essays=formatted)
     text = chat(prompt, model=model, max_tokens=500)
+    text = _strip_code_fences(text)
 
-    text = text.strip()
-    if text.startswith("```"):
-        lines = text.split("\n")
-        text = "\n".join(lines[1:-1]) if lines[-1].strip() == "```" else "\n".join(lines[1:])
+    ranked_ids = json.loads(text)
 
-    return json.loads(text)
+    # Validate: all returned IDs must be from the input set
+    returned = set(ranked_ids)
+    if returned != valid_ids:
+        missing = valid_ids - returned
+        extra = returned - valid_ids
+        if extra:
+            ranked_ids = [i for i in ranked_ids if i in valid_ids]
+        if missing:
+            ranked_ids.extend(missing)
+        print(f"    Warning: LLM returned mismatched IDs (missing={missing}, extra={extra}), corrected")
+
+    return ranked_ids
 
 
 def rank_all_dimensions(essays, model=None):
