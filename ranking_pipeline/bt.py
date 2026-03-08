@@ -9,6 +9,7 @@ import choix
 import numpy as np
 
 from .ranker import rank_essays, DIMENSIONS
+from .llm import run_parallel
 
 
 def listwise_to_pairwise(ranking):
@@ -53,16 +54,15 @@ def run_ranking_pass(all_essays, dimension, window_size=12, model=None):
 
     all_pairs = []
     windows = [shuffled[i : i + window_size] for i in range(0, len(shuffled), window_size)]
+    windows = [w for w in windows if len(w) >= 3]
 
-    for win_idx, window_ids in enumerate(windows):
-        if len(window_ids) < 3:
-            continue
-        window_essays = [essay_map[i] for i in window_ids]
+    # Rank all windows in parallel
+    args_list = [([essay_map[i] for i in wids], dimension, model) for wids in windows]
+    ranked_results = run_parallel(rank_essays, args_list, label="BT windows")
 
-        ranked_ids = rank_essays(window_essays, dimension, model)
-
-        pairs = listwise_to_pairwise(ranked_ids)
-        all_pairs.extend(pairs)
+    for ranked_ids in ranked_results:
+        if ranked_ids is not None:
+            all_pairs.extend(listwise_to_pairwise(ranked_ids))
 
     return all_pairs
 
@@ -184,10 +184,14 @@ def global_bt_all_dimensions(
     Returns:
         Dict of {dimension: {essay_id: bt_score}}.
     """
-    results = {}
-    for dim in DIMENSIONS:
-        print(f"\n{'='*50}\nDimension: {dim.upper()}\n{'='*50}")
-        results[dim] = global_bt(
-            all_essays, dim, window_size, max_passes, convergence_tol, model
-        )
-    return results
+    dims = list(DIMENSIONS.keys())
+    print(f"\nRunning global BT on {len(dims)} dimensions in parallel...")
+    args_list = [
+        (all_essays, dim, window_size, max_passes, convergence_tol, model)
+        for dim in dims
+    ]
+    bt_results = run_parallel(global_bt, args_list, label="BT dimensions")
+    return {
+        dim: result for dim, result in zip(dims, bt_results)
+        if result is not None
+    }

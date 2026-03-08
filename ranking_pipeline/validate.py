@@ -106,14 +106,14 @@ def print_validation_report(results):
     print(f"\n{'='*70}")
     print("VALIDATION REPORT")
     print(f"{'='*70}")
-    print(f"{'Method':<20} {'Aporia':>8} {'Compr.':>8} {'Defam':>8} {'Tension':>8} {'Force':>8} {'Mean':>8}")
-    print("-" * 70)
+    dim_keys = list(DIMENSIONS.keys())
+    header = f"{'Method':<20}" + "".join(f" {d:>10}" for d in dim_keys) + f" {'Mean':>8}"
+    print(header)
+    print("-" * len(header))
 
     for method, dims in results.items():
-        vals = [dims.get(d, 0) for d in ["aporia", "compression", "defam", "tension", "force"]]
+        vals = [dims.get(d, 0) for d in dim_keys]
         mean = sum(vals) / len(vals) if vals else 0
-        print(
-            f"{method:<20} {vals[0]:>8.3f} {vals[1]:>8.3f} {vals[2]:>8.3f} "
-            f"{vals[3]:>8.3f} {vals[4]:>8.3f} {mean:>8.3f}"
-        )
-    print(f"{'='*70}")
+        row = f"{method:<20}" + "".join(f" {v:>10.3f}" for v in vals) + f" {mean:>8.3f}"
+        print(row)
+    print(f"{'=' * len(header)}")

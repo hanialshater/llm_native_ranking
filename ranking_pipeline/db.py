@@ -219,3 +219,68 @@ def delete_rankings_for_session(conn, session_id):
     conn.execute("DELETE FROM rrf_scores WHERE session_id = ?", (session_id,))
     conn.execute("DELETE FROM bt_scores WHERE session_id = ?", (session_id,))
     conn.commit()
+
+
+def get_bt_scores(conn):
+    """
+    Fetch latest BT scores for all essays, grouped by essay and dimension.
+
+    Returns:
+        Dict of {essay_id: {dimension: bt_score}}.
+    """
+    rows = conn.execute(
+        """SELECT essay_id, dimension, bt_score
+           FROM bt_scores b1
+           WHERE b1.id = (
+               SELECT b2.id FROM bt_scores b2
+               WHERE b2.essay_id = b1.essay_id AND b2.dimension = b1.dimension
+               ORDER BY b2.created_at DESC LIMIT 1
+           )"""
+    ).fetchall()
+    scores = {}
+    for r in rows:
+        eid = r["essay_id"]
+        if eid not in scores:
+            scores[eid] = {}
+        scores[eid][r["dimension"]] = r["bt_score"]
+    return scores
+
+
+def get_rrf_scores(conn, use_case="default"):
+    """
+    Fetch latest RRF scores for a use case.
+
+    Returns:
+        Dict of {essay_id: score}.
+    """
+    rows = conn.execute(
+        """SELECT essay_id, score
+           FROM rrf_scores r1
+           WHERE r1.use_case = ? AND r1.id = (
+               SELECT r2.id FROM rrf_scores r2
+               WHERE r2.essay_id = r1.essay_id AND r2.use_case = r1.use_case
+               ORDER BY r2.created_at DESC LIMIT 1
+           )""",
+        (use_case,),
+    ).fetchall()
+    return {r["essay_id"]: r["score"] for r in rows}
+
+
+def get_essay_details(conn, essay_ids):
+    """
+    Fetch essay text, title, and episode info for given IDs.
+
+    Returns:
+        List of dicts with id, title, text, episode_title, episode_source.
+    """
+    if not essay_ids:
+        return []
+    placeholders = ",".join("?" * len(essay_ids))
+    rows = conn.execute(
+        f"""SELECT e.id, e.title, e.text, ep.title as episode_title, ep.source
+            FROM essays e
+            JOIN episodes ep ON e.episode_id = ep.id
+            WHERE e.id IN ({placeholders})""",
+        essay_ids,
+    ).fetchall()
+    return [dict(r) for r in rows]

@@ -1,25 +1,25 @@
 """Listwise LLM ranking per dimension."""
 
 import json
-from .llm import chat, DEFAULT_MODEL
+from .llm import chat, run_parallel, DEFAULT_MODEL
 
 
 DIMENSIONS = {
-    "aporia": """APORIA — Leaves you genuinely stuck, unable to resolve.
-    The essay raises a question or tension the reader cannot immediately dissolve.
-    High aporia = you put it down thinking. Low aporia = you nod and move on.""",
-    "compression": """COMPRESSION — Collapses a big idea into a dense, portable unit.
-    The essay says much in little. You could quote one sentence and it carries the whole.
-    High compression = quotable, tweet-able, memorable. Low = requires context to land.""",
-    "defam": """DEFAMILIARIZATION — Makes something familiar strange.
-    The essay takes something you thought you understood and renders it suddenly odd.
-    High defam = 'I never thought of it that way'. Low = confirms what you already know.""",
-    "tension": """GENERATIVE TENSION — Opens new thought rather than closes it.
-    Reading it produces further questions, connections, implications.
-    High tension = you reach for a pen. Low = satisfying closure, nothing to add.""",
-    "force": """STANDALONE FORCE — Hits hard without any context.
-    A cold reader with no background in the topic would still feel the impact.
-    High force = works as a tweet, a pull quote, an epigraph. Low = requires setup.""",
+    "enjoyment": """ENJOYMENT — Fun to read.
+    Voice, rhythm, wit, narrative pull. You keep reading because you want to, not because you should.
+    High enjoyment = you'd read it on a Saturday morning for fun. Low = feels like homework.""",
+    "utility": """PRACTICAL UTILITY — Gives you something you can use.
+    Actionable takeaways, concrete frameworks, ideas you can apply today.
+    High utility = you change how you do something after reading. Low = interesting but inert.""",
+    "clarity": """CLARITY — Easy to follow without re-reading.
+    Clean structure, logical flow, no ambiguity. The writer did the hard work so you don't have to.
+    High clarity = you could explain it to a friend right after. Low = you'd need to re-read twice.""",
+    "surprise": """SURPRISE — Teaches you something you didn't expect.
+    Reframes the familiar, introduces a genuinely new angle, makes you see differently.
+    High surprise = 'I never thought of it that way.' Low = confirms what you already know.""",
+    "stickiness": """STICKINESS — Stays with you after you close the tab.
+    You'd quote it, share it, or think about it days later.
+    High stickiness = you text a friend the link. Low = forgotten by lunch.""",
 }
 
 RANK_PROMPT = """You will rank the following essays by one specific dimension.
@@ -89,7 +89,7 @@ def rank_essays(essays, dimension, model=None):
 
 def rank_all_dimensions(essays, model=None):
     """
-    Rank essays on all dimensions.
+    Rank essays on all dimensions (in parallel).
 
     Args:
         essays: List of dicts with 'id' and 'text' keys.
@@ -98,8 +98,8 @@ def rank_all_dimensions(essays, model=None):
     Returns:
         Dict of {dimension: [essay_ids ranked best-first]}.
     """
-    rankings = {}
-    for dim in DIMENSIONS:
-        print(f"  Ranking on: {dim}")
-        rankings[dim] = rank_essays(essays, dim, model)
-    return rankings
+    dims = list(DIMENSIONS.keys())
+    print(f"  Ranking on {len(dims)} dimensions in parallel: {', '.join(dims)}")
+    args_list = [(essays, dim, model) for dim in dims]
+    results = run_parallel(rank_essays, args_list, label="dimensions")
+    return {dim: result for dim, result in zip(dims, results) if result is not None}

@@ -4,11 +4,11 @@ Zero LLM calls — pure math on existing rankings.
 """
 
 USE_CASES = {
-    "default": {"aporia": 1.0, "compression": 1.0, "defam": 1.0, "tension": 1.0, "force": 1.0},
-    "substack": {"aporia": 1.5, "compression": 2.0, "defam": 1.5, "tension": 1.0, "force": 0.5},
-    "beginner": {"aporia": 0.5, "compression": 1.5, "defam": 2.0, "tension": 1.0, "force": 2.0},
-    "shareable": {"aporia": 0.5, "compression": 2.5, "defam": 1.5, "tension": 0.5, "force": 2.0},
-    "provocative": {"aporia": 2.0, "compression": 1.0, "defam": 2.0, "tension": 2.0, "force": 0.5},
+    "default": {"enjoyment": 1.0, "utility": 1.0, "clarity": 1.0, "surprise": 1.0, "stickiness": 1.0},
+    "casual": {"enjoyment": 2.5, "utility": 0.5, "clarity": 1.5, "surprise": 1.5, "stickiness": 1.0},
+    "practical": {"enjoyment": 0.5, "utility": 2.5, "clarity": 2.0, "surprise": 0.5, "stickiness": 1.0},
+    "shareable": {"enjoyment": 1.5, "utility": 1.0, "clarity": 1.5, "surprise": 2.0, "stickiness": 2.5},
+    "deep_dive": {"enjoyment": 1.0, "utility": 1.5, "clarity": 0.5, "surprise": 2.0, "stickiness": 2.0},
 }
 
 
