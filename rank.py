@@ -17,6 +17,8 @@ def main():
     parser.add_argument("--no-bt", action="store_true", help="Skip global BT ranking")
     parser.add_argument("--bt-passes", type=int, default=3, help="BT max passes")
     parser.add_argument("--bt-window", type=int, default=12, help="BT window size")
+    parser.add_argument("--force", action="store_true",
+                        help="Force re-rank all episodes, ignoring cached rankings")
     args = parser.parse_args()
 
     run_rank(
@@ -26,6 +28,7 @@ def main():
         run_global_bt=not args.no_bt,
         bt_window_size=args.bt_window,
         bt_max_passes=args.bt_passes,
+        force=args.force,
     )
 
 

@@ -14,9 +14,11 @@ def main():
     )
     parser.add_argument("--n", type=int, default=10, help="Number of episodes/items")
     parser.add_argument("--db", default="ranking.db", help="Database path")
+    parser.add_argument("--force", action="store_true",
+                        help="Force re-scrape, allowing duplicate episodes")
     args = parser.parse_args()
 
-    run_scrape(args.source, args.n, args.db)
+    run_scrape(args.source, args.n, args.db, force=args.force)
 
 
 if __name__ == "__main__":

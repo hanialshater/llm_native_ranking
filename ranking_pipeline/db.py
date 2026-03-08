@@ -163,3 +163,47 @@ def get_episodes(conn, source=None):
     else:
         rows = conn.execute("SELECT * FROM episodes ORDER BY id").fetchall()
     return [dict(r) for r in rows]
+
+
+def episode_exists(conn, source, external_id):
+    """Check if an episode already exists by source + external_id."""
+    row = conn.execute(
+        "SELECT id FROM episodes WHERE source = ? AND external_id = ?",
+        (source, external_id),
+    ).fetchone()
+    return row is not None
+
+
+def get_rankings_for_episode(conn, episode_id, session_id=None):
+    """Check if rankings exist for essays in an episode."""
+    if session_id:
+        rows = conn.execute(
+            """SELECT r.id FROM rankings r
+               JOIN essays e ON r.essay_id = e.id
+               WHERE e.episode_id = ? AND r.session_id = ?
+               LIMIT 1""",
+            (episode_id, session_id),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT r.id FROM rankings r
+               JOIN essays e ON r.essay_id = e.id
+               WHERE e.episode_id = ?
+               LIMIT 1""",
+            (episode_id,),
+        ).fetchall()
+    return len(rows) > 0
+
+
+def delete_essays_for_episode(conn, episode_id):
+    """Delete all essays for an episode (for force-rewrite)."""
+    conn.execute("DELETE FROM essays WHERE episode_id = ?", (episode_id,))
+    conn.commit()
+
+
+def delete_rankings_for_session(conn, session_id):
+    """Delete all ranking data for a session."""
+    conn.execute("DELETE FROM rankings WHERE session_id = ?", (session_id,))
+    conn.execute("DELETE FROM rrf_scores WHERE session_id = ?", (session_id,))
+    conn.execute("DELETE FROM bt_scores WHERE session_id = ?", (session_id,))
+    conn.commit()

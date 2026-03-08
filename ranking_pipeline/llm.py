@@ -1,6 +1,7 @@
 """LLM client configuration for DeepSeek (OpenAI-compatible API)."""
 
 import os
+import time
 from openai import OpenAI
 
 
@@ -8,6 +9,10 @@ from openai import OpenAI
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-chat"  # DeepSeek-V3
 REASONING_MODEL = "deepseek-reasoner"  # DeepSeek-R1
+
+# Retry settings
+MAX_RETRIES = 4
+INITIAL_BACKOFF = 2  # seconds
 
 
 def get_client():
@@ -24,7 +29,7 @@ def get_client():
 
 def chat(prompt, model=None, max_tokens=4000, temperature=0.0):
     """
-    Single-turn chat completion.
+    Single-turn chat completion with retry and exponential backoff.
 
     Args:
         prompt: User message string.
@@ -36,10 +41,21 @@ def chat(prompt, model=None, max_tokens=4000, temperature=0.0):
         Response text string.
     """
     client = get_client()
-    response = client.chat.completions.create(
-        model=model or DEFAULT_MODEL,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return response.choices[0].message.content
+    last_err = None
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            response = client.chat.completions.create(
+                model=model or DEFAULT_MODEL,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            last_err = e
+            if attempt < MAX_RETRIES:
+                wait = INITIAL_BACKOFF * (2 ** attempt)
+                print(f"    LLM call failed (attempt {attempt+1}/{MAX_RETRIES+1}): {e}")
+                print(f"    Retrying in {wait}s...")
+                time.sleep(wait)
+    raise last_err

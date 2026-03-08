@@ -1,6 +1,7 @@
 """Full pipeline runner: scrape → rewrite → rank → score → fuse."""
 
 import uuid
+import sys
 
 from .db import (
     get_connection,
@@ -13,6 +14,9 @@ from .db import (
     get_all_essays,
     get_essays_for_episode,
     get_episodes,
+    episode_exists,
+    get_rankings_for_episode,
+    delete_essays_for_episode,
 )
 from .scrapers.philosophize import scrape_all as scrape_philosophize
 from .scrapers.ig_nobel import scrape_all as scrape_ig_nobel
@@ -23,8 +27,9 @@ from .rrf import rrf_scores, USE_CASES
 from .bt import global_bt_all_dimensions
 
 
-def run_scrape(source="philosophize_this", n_episodes=10, db_path="ranking.db"):
-    """Scrape content and store in DB."""
+def run_scrape(source="philosophize_this", n_episodes=10, db_path="ranking.db",
+               force=False):
+    """Scrape content and store in DB. Skips existing episodes unless force=True."""
     conn = get_connection(db_path)
     setup_db(conn)
 
@@ -38,33 +43,53 @@ def run_scrape(source="philosophize_this", n_episodes=10, db_path="ranking.db"):
     else:
         raise ValueError(f"Unknown source: {source}")
 
+    inserted = 0
+    skipped = 0
     for ep_data in raw:
+        ext_id = ep_data.get("external_id", "")
+        if not force and ext_id and episode_exists(conn, source, ext_id):
+            skipped += 1
+            continue
         insert_episode(conn, source, ep_data)
+        inserted += 1
 
     conn.close()
-    print(f"Stored {len(raw)} episodes")
-    return len(raw)
+    print(f"Stored {inserted} new episodes ({skipped} already existed, skipped)")
+    return inserted
 
 
-def run_rewrite(source="philosophize_this", model=None, db_path="ranking.db"):
-    """Rewrite all episodes into mini-essays."""
+def run_rewrite(source="philosophize_this", model=None, db_path="ranking.db",
+                force=False):
+    """Rewrite all episodes into mini-essays. Skips already-done unless force=True."""
     conn = get_connection(db_path)
     setup_db(conn)
 
     episodes = get_episodes(conn, source)
+    total_episodes = len(episodes)
     total = 0
+    skipped = 0
+    failed = 0
 
-    for ep in episodes:
-        # Skip if already has essays
+    for idx, ep in enumerate(episodes, 1):
+        prefix = f"[{idx}/{total_episodes}]"
+
         existing = get_essays_for_episode(conn, ep["id"])
-        if existing:
-            print(f"  Episode {ep['id']} already has {len(existing)} essays, skipping")
-            continue
-        if not ep["raw_text"]:
-            print(f"  Episode {ep['id']} has no text, skipping")
+        if existing and not force:
+            skipped += 1
+            print(f"  {prefix} Episode {ep['id']} already has {len(existing)} essays, skipping")
             continue
 
-        print(f"\n  Rewriting episode {ep['id']}: {ep['title'][:60]}")
+        if existing and force:
+            print(f"  {prefix} Episode {ep['id']} — force mode, deleting {len(existing)} existing essays")
+            delete_essays_for_episode(conn, ep["id"])
+
+        if not ep["raw_text"]:
+            print(f"  {prefix} Episode {ep['id']} has no text, skipping")
+            skipped += 1
+            continue
+
+        title = ep["title"][:60] if ep["title"] else "Untitled"
+        print(f"\n  {prefix} Rewriting episode {ep['id']}: {title}")
         try:
             essays = rewrite_episode(ep["raw_text"], model=model)
             for e in essays:
@@ -72,46 +97,69 @@ def run_rewrite(source="philosophize_this", model=None, db_path="ranking.db"):
             print(f"    → {len(essays)} essays")
             total += len(essays)
         except Exception as e:
+            failed += 1
             print(f"    Failed: {e}")
 
     conn.close()
-    print(f"\nTotal new essays: {total}")
+    print(f"\nRewrite complete: {total} new essays, {skipped} skipped, {failed} failed")
     return total
 
 
 def run_rank(source="philosophize_this", model=None, db_path="ranking.db",
-             run_global_bt=True, bt_window_size=12, bt_max_passes=3):
-    """Run listwise ranking + RRF + optional global BT."""
+             run_global_bt=True, bt_window_size=12, bt_max_passes=3,
+             force=False):
+    """Run listwise ranking + RRF + optional global BT. Skips ranked episodes unless force=True."""
     conn = get_connection(db_path)
     setup_db(conn)
     session_id = str(uuid.uuid4())
 
     episodes = get_episodes(conn, source)
     all_essays = []
+    total_episodes = len(episodes)
+    ranked_count = 0
+    skipped = 0
 
     # Within-episode ranking
     print("Within-episode listwise ranking...")
-    for ep in episodes:
+    for idx, ep in enumerate(episodes, 1):
+        prefix = f"[{idx}/{total_episodes}]"
         ep_essays = get_essays_for_episode(conn, ep["id"])
         if len(ep_essays) < 3:
             continue
 
-        print(f"\n  Episode {ep['id']}: {ep['title'][:40]} ({len(ep_essays)} essays)")
+        # Skip if already ranked (check for any existing rankings)
+        if not force and get_rankings_for_episode(conn, ep["id"]):
+            skipped += 1
+            essay_objs = [{"id": e["id"], "text": e["text"]} for e in ep_essays]
+            all_essays.extend(essay_objs)
+            print(f"  {prefix} Episode {ep['id']} already ranked, skipping (essays still collected for BT)")
+            continue
+
+        title = ep["title"][:40] if ep["title"] else "Untitled"
+        print(f"\n  {prefix} Episode {ep['id']}: {title} ({len(ep_essays)} essays)")
         essay_objs = [{"id": e["id"], "text": e["text"]} for e in ep_essays]
         all_essays.extend(essay_objs)
-        rankings = rank_all_dimensions(essay_objs, model=model)
 
-        # Store rankings
-        for dim, ranked_ids in rankings.items():
-            for rank_pos, essay_id in enumerate(ranked_ids):
-                insert_ranking(conn, essay_id, session_id, dim, rank_pos + 1, "listwise_llm", model or "default")
+        try:
+            rankings = rank_all_dimensions(essay_objs, model=model)
 
-        # RRF scores
-        for use_case in USE_CASES:
-            scores = rrf_scores(rankings, use_case)
-            sorted_ids = sorted(scores.keys(), key=lambda i: -scores[i])
-            for rank_pos, essay_id in enumerate(sorted_ids):
-                insert_rrf_score(conn, essay_id, session_id, use_case, scores[essay_id], rank_pos + 1)
+            # Store rankings
+            for dim, ranked_ids in rankings.items():
+                for rank_pos, essay_id in enumerate(ranked_ids):
+                    insert_ranking(conn, essay_id, session_id, dim, rank_pos + 1, "listwise_llm", model or "default")
+
+            # RRF scores
+            for use_case in USE_CASES:
+                scores = rrf_scores(rankings, use_case)
+                sorted_ids = sorted(scores.keys(), key=lambda i: -scores[i])
+                for rank_pos, essay_id in enumerate(sorted_ids):
+                    insert_rrf_score(conn, essay_id, session_id, use_case, scores[essay_id], rank_pos + 1)
+
+            ranked_count += 1
+        except Exception as e:
+            print(f"    Failed ranking episode {ep['id']}: {e}")
+
+    print(f"\nWithin-episode ranking: {ranked_count} ranked, {skipped} skipped")
 
     # Global BT
     if run_global_bt and len(all_essays) >= 6:
@@ -134,21 +182,23 @@ def run_rank(source="philosophize_this", model=None, db_path="ranking.db",
 
 
 def run_pipeline(source="philosophize_this", n_episodes=10, model=None,
-                 db_path="ranking.db", run_global_bt=True, bt_max_passes=3):
+                 db_path="ranking.db", run_global_bt=True, bt_max_passes=3,
+                 force=False):
     """Run the full pipeline end-to-end."""
     print(f"{'='*50}")
     print(f"STEP 1: SCRAPING")
     print(f"{'='*50}")
-    run_scrape(source, n_episodes, db_path)
+    run_scrape(source, n_episodes, db_path, force=force)
 
     print(f"\n{'='*50}")
     print(f"STEP 2: REWRITING")
     print(f"{'='*50}")
-    run_rewrite(source, model, db_path)
+    run_rewrite(source, model, db_path, force=force)
 
     print(f"\n{'='*50}")
     print(f"STEP 3: RANKING")
     print(f"{'='*50}")
-    session_id = run_rank(source, model, db_path, run_global_bt, bt_max_passes=bt_max_passes)
+    session_id = run_rank(source, model, db_path, run_global_bt,
+                          bt_max_passes=bt_max_passes, force=force)
 
     return session_id

@@ -14,9 +14,11 @@ def main():
     )
     parser.add_argument("--model", default=None, help="LLM model name")
     parser.add_argument("--db", default="ranking.db", help="Database path")
+    parser.add_argument("--force", action="store_true",
+                        help="Force re-rewrite all episodes, replacing existing essays")
     args = parser.parse_args()
 
-    run_rewrite(args.source, args.model, args.db)
+    run_rewrite(args.source, args.model, args.db, force=args.force)
 
 
 if __name__ == "__main__":

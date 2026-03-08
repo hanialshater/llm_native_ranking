@@ -17,6 +17,8 @@ def main():
     parser.add_argument("--db", default="ranking.db", help="Database path")
     parser.add_argument("--no-bt", action="store_true", help="Skip global BT ranking")
     parser.add_argument("--bt-passes", type=int, default=3, help="BT max passes")
+    parser.add_argument("--force", action="store_true",
+                        help="Force re-process all steps, ignoring cached results")
     args = parser.parse_args()
 
     run_pipeline(
@@ -26,6 +28,7 @@ def main():
         db_path=args.db,
         run_global_bt=not args.no_bt,
         bt_max_passes=args.bt_passes,
+        force=args.force,
     )
 
 
