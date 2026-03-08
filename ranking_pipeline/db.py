@@ -61,6 +61,17 @@ CREATE TABLE IF NOT EXISTS bt_scores (
     session_id TEXT,
     created_at TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS rag_scores (
+    id INTEGER PRIMARY KEY,
+    essay_id INTEGER REFERENCES essays(id),
+    dimension TEXT,
+    score REAL,
+    reasoning TEXT,
+    session_id TEXT,
+    model TEXT,
+    created_at TIMESTAMP
+);
 """
 
 
@@ -209,6 +220,7 @@ def delete_essays_for_episode(conn, episode_id):
         conn.execute(f"DELETE FROM rankings WHERE essay_id IN ({placeholders})", ids)
         conn.execute(f"DELETE FROM rrf_scores WHERE essay_id IN ({placeholders})", ids)
         conn.execute(f"DELETE FROM bt_scores WHERE essay_id IN ({placeholders})", ids)
+        conn.execute(f"DELETE FROM rag_scores WHERE essay_id IN ({placeholders})", ids)
     conn.execute("DELETE FROM essays WHERE episode_id = ?", (episode_id,))
     conn.commit()
 
@@ -264,6 +276,77 @@ def get_rrf_scores(conn, use_case="default"):
         (use_case,),
     ).fetchall()
     return {r["essay_id"]: r["score"] for r in rows}
+
+
+def insert_rag_score(conn, essay_id, dimension, score, reasoning, session_id, model):
+    """Insert a RAG score record (caller should commit in batch)."""
+    conn.execute(
+        """INSERT INTO rag_scores (essay_id, dimension, score, reasoning, session_id, model, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (essay_id, dimension, score, reasoning, session_id, model, _now()),
+    )
+
+
+def get_rag_scores(conn):
+    """
+    Fetch latest RAG scores for all essays, grouped by essay and dimension.
+
+    Returns:
+        Dict of {essay_id: {dimension: score}}.
+    """
+    rows = conn.execute(
+        """SELECT essay_id, dimension, score
+           FROM rag_scores r1
+           WHERE r1.id = (
+               SELECT r2.id FROM rag_scores r2
+               WHERE r2.essay_id = r1.essay_id AND r2.dimension = r1.dimension
+               ORDER BY r2.created_at DESC LIMIT 1
+           )"""
+    ).fetchall()
+    scores = {}
+    for r in rows:
+        eid = r["essay_id"]
+        if eid not in scores:
+            scores[eid] = {}
+        scores[eid][r["dimension"]] = r["score"]
+    return scores
+
+
+def get_rag_score_details(conn, essay_ids):
+    """
+    Fetch latest RAG scores with reasoning for given essay IDs.
+
+    Returns:
+        Dict of {essay_id: {dimension: {score, reasoning}}}.
+    """
+    if not essay_ids:
+        return {}
+    placeholders = ",".join("?" * len(essay_ids))
+    rows = conn.execute(
+        f"""SELECT essay_id, dimension, score, reasoning
+            FROM rag_scores r1
+            WHERE r1.essay_id IN ({placeholders}) AND r1.id = (
+                SELECT r2.id FROM rag_scores r2
+                WHERE r2.essay_id = r1.essay_id AND r2.dimension = r1.dimension
+                ORDER BY r2.created_at DESC LIMIT 1
+            )""",
+        essay_ids,
+    ).fetchall()
+    result = {}
+    for r in rows:
+        eid = r["essay_id"]
+        if eid not in result:
+            result[eid] = {}
+        result[eid][r["dimension"]] = {"score": r["score"], "reasoning": r["reasoning"]}
+    return result
+
+
+def essay_has_rag_scores(conn, essay_id):
+    """Check if an essay already has RAG scores."""
+    row = conn.execute(
+        "SELECT id FROM rag_scores WHERE essay_id = ? LIMIT 1", (essay_id,)
+    ).fetchone()
+    return row is not None
 
 
 def get_essay_details(conn, essay_ids):

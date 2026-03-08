@@ -9,12 +9,13 @@ from ranking_pipeline.rrf import USE_CASES
 
 def format_results(weights, results):
     """Pretty-print query results."""
-    print(f"\n{'='*60}")
-    print("DIMENSION WEIGHTS (interpreted from your query)")
-    print(f"{'='*60}")
-    for dim, w in sorted(weights.items(), key=lambda x: -x[1]):
-        bar = "#" * int(w * 10)
-        print(f"  {dim:<12} {w:.1f}  {bar}")
+    if weights:
+        print(f"\n{'='*60}")
+        print("DIMENSION WEIGHTS (interpreted from your query)")
+        print(f"{'='*60}")
+        for dim, w in sorted(weights.items(), key=lambda x: -x[1]):
+            bar = "#" * int(w * 10)
+            print(f"  {dim:<12} {w:.1f}  {bar}")
 
     print(f"\n{'='*60}")
     print(f"TOP {len(results)} ESSAYS")
@@ -43,6 +44,8 @@ def main():
     parser.add_argument("--use-case", choices=list(USE_CASES.keys()),
                         help="Use a preset use-case instead of NL query")
     parser.add_argument("--top", type=int, default=10, help="Number of results")
+    parser.add_argument("--method", choices=["bt", "rag", "text_match"], default="bt",
+                        help="Retrieval method: bt (default), rag (one-by-one scores), text_match (naive baseline)")
     parser.add_argument("--model", default=None, help="LLM model name")
     parser.add_argument("--db", default="ranking.db", help="Database path")
     args = parser.parse_args()
@@ -67,7 +70,7 @@ def main():
         from ranking_pipeline.query import get_top_essays
         results = get_top_essays(conn, weights, n=args.top)
     else:
-        weights, results = search(conn, args.query, model=args.model, n=args.top)
+        weights, results = search(conn, args.query, model=args.model, n=args.top, method=args.method)
 
     conn.close()
 

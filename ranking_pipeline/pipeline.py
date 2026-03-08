@@ -10,11 +10,13 @@ from .db import (
     insert_ranking,
     insert_rrf_score,
     insert_bt_score,
+    insert_rag_score,
     get_essays_for_episode,
     get_episodes,
     episode_exists,
     get_rankings_for_episode,
     delete_essays_for_episode,
+    essay_has_rag_scores,
 )
 from .scrapers.philosophize import scrape_all as scrape_philosophize
 from .scrapers.ig_nobel import scrape_all as scrape_ig_nobel
@@ -24,6 +26,7 @@ from .llm import run_parallel
 from .ranker import rank_all_dimensions, DIMENSIONS
 from .rrf import rrf_scores, USE_CASES
 from .bt import global_bt_all_dimensions
+from .rag_scorer import score_essays_batch
 
 
 def run_scrape(source="philosophize_this", n_episodes=10, db_path="ranking.db",
@@ -193,6 +196,65 @@ def run_rank(source="philosophize_this", model=None, db_path="ranking.db",
 
     conn.close()
     print(f"\nRanking complete. Session: {session_id}")
+    return session_id
+
+
+def run_rag_score(source="philosophize_this", model=None, db_path="ranking.db",
+                  force=False):
+    """Score all essays one-by-one with RAG context from their source episode."""
+    conn = get_connection(db_path)
+    setup_db(conn)
+    session_id = str(uuid.uuid4())
+
+    episodes = get_episodes(conn, source)
+    total_episodes = len(episodes)
+    essays_to_score = []
+    skipped = 0
+
+    print(f"Collecting essays for RAG scoring (source={source})...")
+    for idx, ep in enumerate(episodes, 1):
+        prefix = f"[{idx}/{total_episodes}]"
+        ep_essays = get_essays_for_episode(conn, ep["id"])
+        if not ep_essays:
+            continue
+
+        for essay in ep_essays:
+            if not force and essay_has_rag_scores(conn, essay["id"]):
+                skipped += 1
+                continue
+            essays_to_score.append({
+                "id": essay["id"],
+                "text": essay["text"],
+                "title": essay.get("title", ""),
+                "context": ep.get("raw_text", "") or "",
+            })
+
+        if ep_essays:
+            title = ep["title"][:50] if ep["title"] else "Untitled"
+            print(f"  {prefix} {title}: {len(ep_essays)} essays")
+
+    if not essays_to_score:
+        print(f"No essays to score ({skipped} already scored)")
+        conn.close()
+        return session_id
+
+    print(f"\nScoring {len(essays_to_score)} essays ({skipped} already scored, skipped)...")
+    results = score_essays_batch(essays_to_score, model=model)
+
+    # Store results
+    stored = 0
+    for essay_id, dim_scores in results.items():
+        for dim, result in dim_scores.items():
+            insert_rag_score(
+                conn, essay_id, dim,
+                result["score"], result["reasoning"],
+                session_id, model or "default",
+            )
+            stored += 1
+    conn.commit()
+    conn.close()
+
+    print(f"\nRAG scoring complete: {stored} scores stored. Session: {session_id}")
     return session_id
 
 

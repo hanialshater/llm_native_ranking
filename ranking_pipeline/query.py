@@ -3,7 +3,7 @@
 import json
 from .llm import chat
 from .ranker import DIMENSIONS
-from .db import get_bt_scores, get_rrf_scores, get_essay_details
+from .db import get_bt_scores, get_rrf_scores, get_rag_scores, get_essay_details, get_all_essays
 
 
 EXAMPLE_QUERIES = [
@@ -124,12 +124,87 @@ def get_top_essays(conn, weights, n=10):
     return results
 
 
+def get_top_essays_rag(conn, weights, n=10):
+    """
+    Query DB and return top N essays ranked by weighted RAG scores.
+
+    RAG scores are absolute 1-10 scores per dimension, so we just
+    compute a weighted sum and sort.
+
+    Args:
+        conn: DB connection.
+        weights: Dict of {dimension: weight}.
+        n: Number of results.
+
+    Returns:
+        List of dicts with essay details and score, sorted best first.
+    """
+    rag = get_rag_scores(conn)
+    if not rag:
+        return []
+
+    composite = score_essays(rag, weights)
+    top_ids = sorted(composite, key=lambda i: -composite[i])[:n]
+    details = get_essay_details(conn, top_ids)
+    detail_map = {d["id"]: d for d in details}
+
+    results = []
+    for eid in top_ids:
+        if eid in detail_map:
+            entry = detail_map[eid]
+            entry["score"] = composite[eid]
+            results.append(entry)
+    return results
+
+
+def get_top_essays_text_match(conn, query, n=10):
+    """
+    Naive text-match baseline: score essays by keyword overlap with query.
+
+    Counts how many query words appear in the essay text (case-insensitive).
+    This is intentionally simple — a lower bound baseline.
+
+    Args:
+        conn: DB connection.
+        query: Search query string.
+        n: Number of results.
+
+    Returns:
+        List of dicts with essay details and score, sorted best first.
+    """
+    all_essays = get_all_essays(conn)
+    if not all_essays:
+        return []
+
+    query_words = set(query.lower().split())
+    scored = {}
+    for essay in all_essays:
+        text_lower = (essay.get("text", "") or "").lower()
+        title_lower = (essay.get("title", "") or "").lower()
+        combined = text_lower + " " + title_lower
+        # Count matching query words (normalized by query length)
+        matches = sum(1 for w in query_words if w in combined)
+        scored[essay["id"]] = matches / max(len(query_words), 1)
+
+    top_ids = sorted(scored, key=lambda i: -scored[i])[:n]
+    details = get_essay_details(conn, top_ids)
+    detail_map = {d["id"]: d for d in details}
+
+    results = []
+    for eid in top_ids:
+        if eid in detail_map:
+            entry = detail_map[eid]
+            entry["score"] = scored[eid]
+            results.append(entry)
+    return results
+
+
 def suggest_queries():
     """Return example queries to help users get started."""
     return EXAMPLE_QUERIES
 
 
-def search(conn, query, model=None, n=10):
+def search(conn, query, model=None, n=10, method="bt"):
     """
     End-to-end: interpret a natural language query and return top essays.
 
@@ -138,10 +213,20 @@ def search(conn, query, model=None, n=10):
         query: Natural language description.
         model: Model name for query interpretation.
         n: Number of results.
+        method: Retrieval method — "bt" (default), "rag", or "text_match".
 
     Returns:
         Tuple of (weights_dict, results_list).
     """
+    if method == "text_match":
+        results = get_top_essays_text_match(conn, query, n=n)
+        return {}, results
+
     weights = interpret_query(query, model=model)
-    results = get_top_essays(conn, weights, n=n)
+
+    if method == "rag":
+        results = get_top_essays_rag(conn, weights, n=n)
+    else:
+        results = get_top_essays(conn, weights, n=n)
+
     return weights, results
