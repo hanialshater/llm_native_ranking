@@ -1,18 +1,19 @@
-"""Rewrite raw transcripts/texts into standalone philosophical mini-essays."""
+"""Rewrite raw transcripts/texts into standalone mini-essays."""
 
 import json
-from .llm import chat, DEFAULT_MODEL
+from .llm import chat
 
 
-REWRITE_PROMPT = """You are given a transcript or text. Extract the 10-15 most philosophically \
-distinct claims, observations, or ideas. For each, write a standalone mini-essay that captures \
+REWRITE_PROMPT = """You are given a transcript or text. Extract the 10-15 most interesting, \
+distinct ideas, claims, or observations. For each, write a standalone mini-essay that captures \
 the idea fully — as long as the idea requires, no more. Do not compress or pad to a fixed length.
 Do not reference the source text, episode number, or author.
 
 Each mini-essay must:
 - Stand alone — no "as discussed above" or "the author argues"
-- Make one clear philosophical claim
+- Make one clear point (a philosophical claim, a practical insight, a surprising fact, a vivid argument)
 - Be complete in itself — a cold reader should grasp it without context
+- Be engaging to read — good voice, clear structure, memorable phrasing
 
 Return a JSON array:
 [

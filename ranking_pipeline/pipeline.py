@@ -10,7 +10,6 @@ from .db import (
     insert_ranking,
     insert_rrf_score,
     insert_bt_score,
-    get_all_essays,
     get_essays_for_episode,
     get_episodes,
     episode_exists,

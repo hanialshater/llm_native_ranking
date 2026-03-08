@@ -6,7 +6,6 @@ Multi-pass shuffle → listwise LLM windows → pairwise observations → BT sco
 import random
 
 import choix
-import numpy as np
 
 from .ranker import rank_essays, DIMENSIONS
 from .llm import run_parallel
