@@ -1,7 +1,7 @@
 """Rewrite raw transcripts/texts into standalone philosophical mini-essays."""
 
 import json
-from .llm import chat, run_parallel, DEFAULT_MODEL
+from .llm import chat, DEFAULT_MODEL
 
 
 REWRITE_PROMPT = """You are given a transcript or text. Extract the 10-15 most philosophically \
@@ -57,20 +57,3 @@ def rewrite_episode(raw_text, model=None):
     if not validated:
         raise ValueError(f"LLM returned no valid essays (got {len(essays)} items)")
     return validated
-
-
-def rewrite_batch(episodes_texts, model=None):
-    """
-    Rewrite multiple episodes (in parallel).
-
-    Args:
-        episodes_texts: List of raw text strings.
-        model: Model name.
-
-    Returns:
-        List of lists of essay dicts.
-    """
-    print(f"  Rewriting {len(episodes_texts)} episodes in parallel...")
-    args_list = [(text, model) for text in episodes_texts]
-    results = run_parallel(rewrite_episode, args_list, label="rewrites")
-    return [r if r is not None else [] for r in results]

@@ -21,6 +21,7 @@ from .scrapers.philosophize import scrape_all as scrape_philosophize
 from .scrapers.ig_nobel import scrape_all as scrape_ig_nobel
 from .scrapers.ebert import scrape_all as scrape_ebert
 from .rewriter import rewrite_episode
+from .llm import run_parallel
 from .ranker import rank_all_dimensions, DIMENSIONS
 from .rrf import rrf_scores, USE_CASES
 from .bt import global_bt_all_dimensions
@@ -60,16 +61,16 @@ def run_scrape(source="philosophize_this", n_episodes=10, db_path="ranking.db",
 
 def run_rewrite(source="philosophize_this", model=None, db_path="ranking.db",
                 force=False):
-    """Rewrite all episodes into mini-essays. Skips already-done unless force=True."""
+    """Rewrite all episodes into mini-essays (parallel). Skips already-done unless force=True."""
     conn = get_connection(db_path)
     setup_db(conn)
 
     episodes = get_episodes(conn, source)
     total_episodes = len(episodes)
-    total = 0
     skipped = 0
-    failed = 0
 
+    # Phase 1: collect eligible episodes (sequential DB ops)
+    to_rewrite = []
     for idx, ep in enumerate(episodes, 1):
         prefix = f"[{idx}/{total_episodes}]"
 
@@ -89,17 +90,28 @@ def run_rewrite(source="philosophize_this", model=None, db_path="ranking.db",
             continue
 
         title = ep["title"][:60] if ep["title"] else "Untitled"
-        print(f"\n  {prefix} Rewriting episode {ep['id']}: {title}")
-        try:
-            essays = rewrite_episode(ep["raw_text"], model=model)
-            for e in essays:
-                insert_essay(conn, ep["id"], e)
-            conn.commit()
-            print(f"    → {len(essays)} essays")
-            total += len(essays)
-        except Exception as e:
-            failed += 1
-            print(f"    Failed: {e}")
+        print(f"  {prefix} Queued: {title}")
+        to_rewrite.append(ep)
+
+    # Phase 2: parallel rewrite LLM calls
+    total = 0
+    failed = 0
+    if to_rewrite:
+        print(f"\n  Rewriting {len(to_rewrite)} episodes in parallel...")
+        args_list = [(ep["raw_text"], model) for ep in to_rewrite]
+        results = run_parallel(rewrite_episode, args_list, label="rewrites")
+
+        # Insert results (sequential DB writes)
+        for ep, essays in zip(to_rewrite, results):
+            if essays:
+                for e in essays:
+                    insert_essay(conn, ep["id"], e)
+                conn.commit()
+                print(f"    Episode {ep['id']}: {len(essays)} essays")
+                total += len(essays)
+            else:
+                failed += 1
+                print(f"    Episode {ep['id']}: failed")
 
     conn.close()
     print(f"\nRewrite complete: {total} new essays, {skipped} skipped, {failed} failed")
