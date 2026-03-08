@@ -6,6 +6,7 @@ relative rankings), so essays can be compared without seeing each other.
 """
 
 import json
+import threading
 from .llm import chat, run_parallel, DEFAULT_MODEL
 from .ranker import DIMENSIONS
 
@@ -120,9 +121,38 @@ def score_essays_batch(essays_with_context, model=None):
     Returns:
         Dict of {essay_id: {dimension: {score, reasoning}}}.
     """
+    n_essays = len(essays_with_context)
+    n_dims = len(DIMENSIONS)
+    total_calls = n_essays * n_dims
+    print(f"  Scoring {n_essays} essays × {n_dims} dimensions = {total_calls} LLM calls")
+
+    # Track per-essay completion across threads
+    lock = threading.Lock()
+    essay_dim_done = {}  # essay_id -> set of completed dimensions
+    essay_titles = {e["id"]: e.get("title", "Untitled")[:40] for e in essays_with_context}
+    _batch_scores = {}  # essay_id -> {dim: score} for logging
+
+    def score_and_track(essay_text, title, context, dimension, essay_id, mdl):
+        result = score_essay_dimension(essay_text, title, context, dimension, mdl)
+        with lock:
+            if essay_id not in essay_dim_done:
+                essay_dim_done[essay_id] = set()
+            if essay_id not in _batch_scores:
+                _batch_scores[essay_id] = {}
+            essay_dim_done[essay_id].add(dimension)
+            _batch_scores[essay_id][dimension] = result["score"]
+            done_dims = len(essay_dim_done[essay_id])
+            if done_dims == n_dims:
+                essays_complete = sum(1 for v in essay_dim_done.values() if len(v) == n_dims)
+                s = _batch_scores[essay_id]
+                scores_str = ", ".join(f"{d[:3]}={s[d]:.0f}" for d in sorted(s))
+                print(f"    [{essays_complete}/{n_essays}] Essay {essay_id}: "
+                      f"{essay_titles.get(essay_id, '?')} | {scores_str}")
+        return result
+
     # Build flat list of all (essay, dimension) scoring tasks
     all_tasks = []
-    task_keys = []  # (essay_id, dimension)
+    task_keys = []
     for essay in essays_with_context:
         for dim in DIMENSIONS:
             all_tasks.append((
@@ -130,12 +160,12 @@ def score_essays_batch(essays_with_context, model=None):
                 essay.get("title", ""),
                 essay.get("context", ""),
                 dim,
+                essay["id"],
                 model,
             ))
             task_keys.append((essay["id"], dim))
 
-    print(f"  Scoring {len(essays_with_context)} essays × {len(DIMENSIONS)} dimensions = {len(all_tasks)} LLM calls")
-    results = run_parallel(score_essay_dimension, all_tasks, label="RAG scores")
+    results = run_parallel(score_and_track, all_tasks, label="RAG scores")
 
     # Reassemble into {essay_id: {dimension: result}}
     scores = {}

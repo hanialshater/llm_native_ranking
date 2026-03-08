@@ -106,6 +106,13 @@ def run_parallel(fn, args_list, label="tasks"):
             done_count += 1
             try:
                 results[idx] = future.result()
+                if total > 5:
+                    # Log progress every 10% or every item for small batches
+                    step = max(1, total // 10)
+                    if done_count % step == 0 or done_count == total:
+                        print(f"    [{done_count}/{total}] {label} done")
+                else:
+                    print(f"    [{done_count}/{total}] {label} done")
             except Exception as e:
                 errors.append((idx, e))
                 print(f"    [{done_count}/{total}] {label} item {idx} failed: {e}")
