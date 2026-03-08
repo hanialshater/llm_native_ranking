@@ -1,14 +1,17 @@
 """Evaluation framework: gold-standard LLM ranking vs retrieval methods.
 
-For a small set of essays, concatenates all texts and asks the LLM to rank
-them directly for a given query. Then compares BT, RAG, and text-match
-retrieval methods against this gold standard at @1, @3, @5, @10.
+For a given set of essays, asks the LLM to rank them directly for a query
+(gold standard). Then compares how each retrieval method's top-K overlaps
+with the gold top-K, using Precision@K.
+
+Key design: gold standard and all methods operate on the SAME essay subset
+to ensure fair comparison.
 """
 
 import json
 from .llm import chat
-from .db import get_connection, get_all_essays, get_essay_details
-from .query import search
+from .db import get_all_essays, get_essay_details, get_bt_scores, get_rag_scores
+from .query import interpret_query, score_essays, get_top_essays_text_match
 
 
 GOLD_RANK_PROMPT = """You are an expert essay curator. A reader wants: "{query}"
@@ -22,7 +25,7 @@ Consider how well each essay matches what the reader is looking for.
 - Rank ALL essays from best match to worst match
 - No ties — force strict ordering
 - Return ONLY a JSON array of essay IDs in ranked order (best first):
-  [42, 17, 3, ...]
+  [{example_ids}]
 
 Return only the JSON array, nothing else."""
 
@@ -52,8 +55,11 @@ def gold_standard_ranking(essays, query, model=None):
         f"**Essay {e['id']}** — {e.get('title', 'Untitled')}:\n{e['text']}"
         for e in essays
     )
-    prompt = GOLD_RANK_PROMPT.format(query=query, n=len(essays), essays=formatted)
-    text = chat(prompt, model=model, max_tokens=1000)
+    example_ids = ", ".join(str(e["id"]) for e in essays[:3]) + ", ..."
+    prompt = GOLD_RANK_PROMPT.format(
+        query=query, n=len(essays), essays=formatted, example_ids=example_ids,
+    )
+    text = chat(prompt, model=model, max_tokens=2000)
     text = _strip_code_fences(text)
     ranked_ids = json.loads(text)
 
@@ -66,22 +72,14 @@ def gold_standard_ranking(essays, query, model=None):
             ranked_ids = [i for i in ranked_ids if i in valid_ids]
         if missing:
             ranked_ids.extend(missing)
+        if missing or extra:
+            print(f"    Gold warning: missing={len(missing)}, extra={len(extra)}, corrected")
 
     return ranked_ids
 
 
 def precision_at_k(retrieved, gold, k):
-    """
-    Precision@K: fraction of top-K retrieved that appear in top-K gold.
-
-    Args:
-        retrieved: List of IDs in retrieval order.
-        gold: List of IDs in gold-standard order.
-        k: Cutoff.
-
-    Returns:
-        Float in [0, 1].
-    """
+    """Fraction of top-K retrieved that appear in top-K gold."""
     if k <= 0 or not retrieved or not gold:
         return 0.0
     gold_top_k = set(gold[:k])
@@ -90,21 +88,66 @@ def precision_at_k(retrieved, gold, k):
     return hits / k
 
 
-def evaluate_query(conn, query, model=None, max_essays=50, ks=(1, 3, 5, 10)):
+def _rank_subset_by_bt(conn, essay_ids, weights):
+    """Rank a specific subset of essays using BT scores + weights."""
+    bt = get_bt_scores(conn)
+    if not bt:
+        return []
+    # Filter to only our subset
+    bt_subset = {eid: scores for eid, scores in bt.items() if eid in essay_ids}
+    if not bt_subset:
+        return []
+    composite = score_essays(bt_subset, weights)
+    return sorted(composite, key=lambda i: -composite[i])
+
+
+def _rank_subset_by_rag(conn, essay_ids, weights):
+    """Rank a specific subset of essays using RAG scores + weights."""
+    rag = get_rag_scores(conn)
+    if not rag:
+        return []
+    rag_subset = {eid: scores for eid, scores in rag.items() if eid in essay_ids}
+    if not rag_subset:
+        return []
+    composite = score_essays(rag_subset, weights)
+    return sorted(composite, key=lambda i: -composite[i])
+
+
+def _rank_subset_by_text(conn, essay_ids, query, essays_with_text):
+    """Rank a specific subset of essays using text match."""
+    query_words = set(query.lower().split())
+    scored = {}
+    for e in essays_with_text:
+        if e["id"] not in essay_ids:
+            continue
+        text_lower = (e.get("text", "") or "").lower()
+        title_lower = (e.get("title", "") or "").lower()
+        combined = text_lower + " " + title_lower
+        matches = sum(1 for w in query_words if w in combined)
+        scored[e["id"]] = matches / max(len(query_words), 1)
+    return sorted(scored, key=lambda i: -scored[i])
+
+
+def evaluate_query(conn, query, model=None, max_essays=50, ks=(1, 3, 5, 10),
+                   n_gold_runs=3):
     """
-    Evaluate all retrieval methods against gold-standard LLM ranking for one query.
+    Evaluate all retrieval methods against gold-standard LLM ranking.
+
+    All methods are evaluated on the SAME essay subset for fair comparison.
+    Gold standard is averaged over multiple runs to reduce LLM variance.
 
     Args:
         conn: DB connection.
         query: Natural language query.
         model: Model name.
-        max_essays: Max essays to include in gold ranking (keep small for cost).
+        max_essays: Max essays to include (keeps gold ranking feasible).
         ks: Tuple of K values for precision@K.
+        n_gold_runs: Number of gold ranking runs to average over.
 
     Returns:
         Dict with gold ranking and per-method precision@K scores.
     """
-    # Get all essays (limit for gold ranking feasibility)
+    # Get essay subset — same for gold AND all methods
     all_essays = get_all_essays(conn)
     if len(all_essays) > max_essays:
         all_essays = all_essays[:max_essays]
@@ -114,10 +157,10 @@ def evaluate_query(conn, query, model=None, max_essays=50, ks=(1, 3, 5, 10)):
         return {}
 
     essay_ids = [e["id"] for e in all_essays]
+    essay_id_set = set(essay_ids)
     details = get_essay_details(conn, essay_ids)
     detail_map = {d["id"]: d for d in details}
 
-    # Build essay list with text for gold ranking
     essays_for_gold = []
     for e in all_essays:
         d = detail_map.get(e["id"])
@@ -129,29 +172,56 @@ def evaluate_query(conn, query, model=None, max_essays=50, ks=(1, 3, 5, 10)):
             })
 
     n = len(essays_for_gold)
-    max_k = max(ks)
     print(f"\nEvaluating query: \"{query}\" ({n} essays)")
 
-    # Gold standard
-    print("  Computing gold-standard LLM ranking...")
-    gold = gold_standard_ranking(essays_for_gold, query, model=model)
+    # Gold standard — run multiple times and aggregate via average rank
+    print(f"  Computing gold-standard LLM ranking ({n_gold_runs} runs)...")
+    avg_rank = {e["id"]: 0.0 for e in essays_for_gold}
+    gold_runs = []
+    for run in range(n_gold_runs):
+        gold = gold_standard_ranking(essays_for_gold, query, model=model)
+        gold_runs.append(gold)
+        for rank_pos, eid in enumerate(gold):
+            avg_rank[eid] += rank_pos
+        print(f"    Gold run {run+1}/{n_gold_runs}: top-3 = {gold[:3]}")
 
-    # Run each retrieval method
-    methods = ["bt", "rag", "text_match"]
-    results = {"query": query, "n_essays": n, "gold_top10": gold[:10], "methods": {}}
+    # Final gold = sorted by average rank position
+    for eid in avg_rank:
+        avg_rank[eid] /= n_gold_runs
+    gold_final = sorted(avg_rank, key=lambda i: avg_rank[i])
+    print(f"  Gold consensus top-5: {gold_final[:5]}")
 
-    for method in methods:
-        print(f"  Running {method} retrieval...")
-        try:
-            _, retrieved = search(conn, query, model=model, n=max_k, method=method)
-            retrieved_ids = [r["id"] for r in retrieved]
-        except Exception as e:
-            print(f"    {method} failed: {e}")
-            retrieved_ids = []
+    # Interpret query weights (shared by BT and RAG)
+    weights = interpret_query(query, model=model)
 
+    # Rank using each method — restricted to same essay subset
+    methods_results = {}
+
+    # BT
+    bt_ranked = _rank_subset_by_bt(conn, essay_id_set, weights)
+    methods_results["bt"] = bt_ranked
+
+    # RAG
+    rag_ranked = _rank_subset_by_rag(conn, essay_id_set, weights)
+    methods_results["rag"] = rag_ranked
+
+    # Text match
+    text_ranked = _rank_subset_by_text(conn, essay_id_set, query, essays_for_gold)
+    methods_results["text_match"] = text_ranked
+
+    # Compute precision@K for each method
+    results = {
+        "query": query,
+        "n_essays": n,
+        "gold_top10": gold_final[:10],
+        "weights": weights,
+        "methods": {},
+    }
+
+    for method, retrieved_ids in methods_results.items():
         precisions = {}
         for k in ks:
-            p = precision_at_k(retrieved_ids, gold, k)
+            p = precision_at_k(retrieved_ids, gold_final, k)
             precisions[f"P@{k}"] = p
 
         results["methods"][method] = {
@@ -159,12 +229,13 @@ def evaluate_query(conn, query, model=None, max_essays=50, ks=(1, 3, 5, 10)):
             "precisions": precisions,
         }
         prec_str = ", ".join(f"P@{k}={precisions[f'P@{k}']:.2f}" for k in ks)
-        print(f"    {method}: {prec_str}")
+        print(f"  {method:12s}: {prec_str}")
 
     return results
 
 
-def evaluate_queries(conn, queries, model=None, max_essays=50, ks=(1, 3, 5, 10)):
+def evaluate_queries(conn, queries, model=None, max_essays=50, ks=(1, 3, 5, 10),
+                     n_gold_runs=3):
     """
     Evaluate multiple queries and compute average precision@K per method.
 
@@ -174,13 +245,17 @@ def evaluate_queries(conn, queries, model=None, max_essays=50, ks=(1, 3, 5, 10))
         model: Model name.
         max_essays: Max essays for gold ranking.
         ks: K values for precision@K.
+        n_gold_runs: Gold ranking runs per query for stability.
 
     Returns:
         Dict with per-query results and averaged metrics.
     """
     all_results = []
     for query in queries:
-        result = evaluate_query(conn, query, model=model, max_essays=max_essays, ks=ks)
+        result = evaluate_query(
+            conn, query, model=model, max_essays=max_essays,
+            ks=ks, n_gold_runs=n_gold_runs,
+        )
         if result:
             all_results.append(result)
 

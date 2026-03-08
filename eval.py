@@ -26,6 +26,8 @@ def main():
                         help="Max essays for gold ranking (keep small for cost)")
     parser.add_argument("--model", default=None, help="LLM model name")
     parser.add_argument("--db", default="ranking.db", help="Database path")
+    parser.add_argument("--gold-runs", type=int, default=3,
+                        help="Gold ranking runs per query (averaged for stability)")
     parser.add_argument("--output", default=None, help="Save results to JSON file")
     args = parser.parse_args()
 
@@ -36,12 +38,14 @@ def main():
 
     print(f"Evaluating {len(queries)} queries against gold-standard ranking")
     print(f"Max essays per query: {args.max_essays}")
+    print(f"Gold runs per query: {args.gold_runs}")
     print(f"Methods: bt, rag, text_match")
 
     results = evaluate_queries(
         conn, queries,
         model=args.model,
         max_essays=args.max_essays,
+        n_gold_runs=args.gold_runs,
     )
 
     conn.close()
