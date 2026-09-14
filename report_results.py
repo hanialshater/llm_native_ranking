@@ -30,7 +30,8 @@ def summarize(root,run_dir=None):
         if not folder.is_absolute():folder=root/folder
         path=folder/"run.json"
     else:
-        path=root/"results/llm/run.json"
+        candidates=[p for p in [root/"results/llm/run.json",root/"results/llm-constrained/run.json"] if p.exists()]
+        path=max(candidates,key=lambda p:p.stat().st_mtime) if candidates else root/"results/llm/run.json"
         if not path.exists():raise FileNotFoundError(
             "No completed LLM run at results/llm/run.json. Finish the training cell "
             "or pass run_dir='results/gpu-check' to inspect that short check. "
@@ -43,19 +44,22 @@ def summarize(root,run_dir=None):
     metrics=[]
     values={m:np.array([e["methods"][m][value_key] for e in evaluation],dtype=float) for m in methods}
     base=average(values.get("supervised_policy",[]))
+    base_valid=all(not e["methods"].get("supervised_policy",{}).get("fallback",True) for e in evaluation)
     for m in methods:
         records=[e["methods"][m] for e in evaluation];value=float(values[m].mean())
         valid=[not x.get("fallback",False) for x in records]
         metrics.append(dict(method=m,label=NAMES[m],value=value,
-            change_vs_sft_pct=None if base in [None,0] else 100*(value/base-1),
+            policy_value=value if all(valid) else None,
+            change_vs_sft_pct=None if base in [None,0] or not base_valid or not all(valid) else 100*(value/base-1),
             valid_slates=sum(valid),contexts=len(evaluation),valid_rate=sum(valid)/len(valid),
             fallback_rate=1-sum(valid)/len(valid),
             valid_only_value=average([x[value_key] for x,v in zip(records,valid) if v])))
     comparisons={}
-    if "grpo_policy" in values:
+    if "grpo_policy" in values and all(not e["methods"]["grpo_policy"].get("fallback",False) for e in evaluation):
         rng=np.random.default_rng(99)
         for other in ["supervised_policy","greedy_list_value","direct_value"]:
             if other not in values:continue
+            if any(e["methods"][other].get("fallback",False) for e in evaluation):continue
             d=values["grpo_policy"]-values[other]
             # Bound intermediate memory for large runs.
             boots=np.array([rng.choice(d,len(d),replace=True).mean() for _ in range(1000)])
@@ -93,6 +97,7 @@ def summarize(root,run_dir=None):
         is_tiny=bool(run.get("config",{}).get("tiny")),contexts=len(evaluation),verdict=verdict,
         model=run.get("config",{}).get("model","unknown"),steps=run.get("config",{}).get("steps"),
         sft_steps=run.get("config",{}).get("sft_steps"),prompt_tokens=run.get("prompt_tokens"),
+        decoder=run.get("decoder","legacy (duplicates possible)"),reevaluation=run.get("reevaluation"),
         metrics=metrics,comparisons=comparisons,examples=examples,history=run.get("history",[]))
 
 
@@ -101,12 +106,15 @@ def markdown(report):
         f"{report['contexts']} evaluation contexts · {escaped(report['model'])} · {report['sft_steps']} SFT / {report['steps']} GRPO steps", "",
         "**"+report["kind"]+"; no measured customer GMV.** Higher value and higher valid-list rate are better.", ""]
     if report["is_tiny"]:lines += ["**Random tiny-model integration check only; this is not a pretrained-model quality result.**", ""]
-    lines += ["| Method | Value ↑ | Change vs SFT | Valid lists ↑ | Fallbacks ↓ |",
-              "|---|---:|---:|---:|---:|"]
+    if report.get("reevaluation"):
+        lines += ["**Existing weights re-evaluated with unique-candidate decoding. No additional training was performed.**", ""]
+    lines += ["| Method | Policy value ↑ | Service value (with fallback) | Change vs SFT | Valid lists ↑ | Fallbacks ↓ |",
+              "|---|---:|---:|---:|---:|---:|"]
     for m in report["metrics"]:
         change="—" if m["change_vs_sft_pct"] is None else f"{m['change_vs_sft_pct']:+.1f}%"
-        lines.append(f"| {m['label']} | {m['value']:.3f} | {change} | {m['valid_slates']}/{m['contexts']} ({m['valid_rate']:.0%}) | {m['fallback_rate']:.0%} |")
-    lines += ["", "Value is measured after fallback. A high value with frequent fallback is not evidence of a good learned policy.", ""]
+        policy="—" if m["policy_value"] is None else f"{m['policy_value']:.3f}"
+        lines.append(f"| {m['label']} | {policy} | {m['value']:.3f} | {change} | {m['valid_slates']}/{m['contexts']} ({m['valid_rate']:.0%}) | {m['fallback_rate']:.0%} |")
+    lines += ["", "Policy value and policy comparisons are shown only when all evaluated lists are valid. Service value includes fallback; it is not a substitute for policy quality.", ""]
     for baseline,c in report["comparisons"].items():
         lines.append(f"GRPO minus {NAMES[baseline]}: **{c['mean_delta']:+.3f}**; paired context-bootstrap 95% interval [{c['ci95'][0]:+.3f}, {c['ci95'][1]:+.3f}].")
     lines += ["", "These intervals describe variation across this evaluation's contexts, not training-seed uncertainty or causal GMV lift.", "",
